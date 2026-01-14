@@ -1,6 +1,10 @@
 import datetime
 from django.db.models import Sum
 from decimal import Decimal
+from calendar import monthrange
+from datetime import datetime, timedelta
+from collections import OrderedDict
+from django.db.models.functions import TruncMonth
 from decimal import Decimal, InvalidOperation
 from django.contrib.auth import authenticate, login
 from rest_framework.authentication import BasicAuthentication
@@ -488,3 +492,80 @@ def wallet_summary(request, wallet_id):
     except Wallet.DoesNotExist:
         return Response({"error": "Wallet not found"}, status=404)
 
+@api_view(['GET'])
+@authentication_classes([BasicAuthentication])
+def wallet_monthly_report(request, wallet_id, year: int):
+    """
+    get: Generate month-wise financial report for a wallet
+    """
+    try:
+        wallet = Wallet.objects.get(id=wallet_id)
+
+        # Get all transactions of this wallet for the year
+        transactions = Transaction.objects.filter(
+            wallet=wallet,
+            created_at__year=year
+        )
+
+        # Aggregate deposits and withdrawals per month
+        monthly_data = transactions.annotate(month=TruncMonth('created_at')) \
+            .values('month', 'type') \
+            .annotate(total=Sum('value')) \
+            .order_by('month')
+
+        # Initialize month-wise report dictionary (Jan → Dec)
+        report = OrderedDict()
+        for m in range(1, 13):
+            report[m] = {
+                "month": m,
+                "month_name": datetime(year, m, 1).strftime("%B"),
+                "opening_balance": Decimal('0.00'),
+                "total_added": Decimal('0.00'),
+                "total_spent": Decimal('0.00'),
+                "closing_balance": Decimal('0.00')
+            }
+
+        # Fill month-wise totals from transaction aggregation
+        for entry in monthly_data:
+            month_number = entry['month'].month
+            if entry['type'] == 'D':
+                report[month_number]["total_added"] = entry['total'] or Decimal('0.00')
+            elif entry['type'] == 'W':
+                report[month_number]["total_spent"] = entry['total'] or Decimal('0.00')
+
+        # Compute opening and closing balances
+        # Opening balance for Jan = previous year balance (or 0)
+        # We'll calculate previous balance by summing all transactions before this year
+        prev_transactions = Transaction.objects.filter(
+            wallet=wallet,
+            created_at__lt=datetime(year, 1, 1)
+        )
+
+        prev_balance = (
+            prev_transactions.filter(type='D').aggregate(total=Sum('value'))['total'] or Decimal('0.00')
+        ) - (
+            prev_transactions.filter(type='W').aggregate(total=Sum('value'))['total'] or Decimal('0.00')
+        )
+
+        # Fill balances month by month
+        running_balance = prev_balance
+        for m in range(1, 13):
+            month_entry = report[m]
+            month_entry["opening_balance"] = running_balance
+            month_entry["closing_balance"] = running_balance + month_entry["total_added"] - month_entry["total_spent"]
+            running_balance = month_entry["closing_balance"]
+
+            # Convert all Decimals to string for JSON
+            month_entry["opening_balance"] = str(month_entry["opening_balance"])
+            month_entry["closing_balance"] = str(month_entry["closing_balance"])
+            month_entry["total_added"] = str(month_entry["total_added"])
+            month_entry["total_spent"] = str(month_entry["total_spent"])
+
+        return Response({
+            "wallet_id": wallet_id,
+            "year": year,
+            "monthly_report": list(report.values())
+        }, status=200)
+
+    except Wallet.DoesNotExist:
+        return Response({"error": "Wallet not found"}, status=404)

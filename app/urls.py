@@ -38,5 +38,5 @@ urlpatterns = [
     path('wallet/transfer/', views.transfer_money),
     path('wallet/<str:wallet_id>/transactions/', views.wallet_transactions),
     path('wallet/<str:wallet_id>/summary/', views.wallet_summary, name='wallet_summary'),
-
+    path('wallet/<str:wallet_id>/monthly-report/<int:year>/', views.wallet_monthly_report, name='wallet_monthly_report'),
 ]
