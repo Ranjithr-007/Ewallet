@@ -21,18 +21,8 @@ from app import views
 urlpatterns = [
     path('register/', views.api_create_account, name='register'),
     path('login/', views.api_login, name='login'),
-    path('fund-wallet/', views.api_fund_wallet, name='fund-wallet'),
+    
     path('create-wallet/', views.api_create_wallet, name='create-wallet'),
-    path('transfer-funds/', views.api_transfer_funds, name='transfer-funds'),
-    path('transaction-history/', views.api_transaction_history,
-         name='transaction-history'),
-   
-
-    path('wallet/add/', views.add_money, name='add_money'),
-    path('wallet/spend/', views.spend_money, name='spend_money'),
-    path('wallet/<str:wallet_id>/balance/', views.wallet_balance, name='wallet_balance'),
-    path('wallet/transfer/', views.transfer_money, name='transfer_money'),
-
     path('wallet/add/', views.add_money),
     path('wallet/spend/', views.spend_money),
     path('wallet/transfer/', views.transfer_money),
