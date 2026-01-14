@@ -1,4 +1,5 @@
 import datetime
+from django.db.models import Sum
 from decimal import Decimal
 from decimal import Decimal, InvalidOperation
 from django.contrib.auth import authenticate, login
@@ -268,7 +269,7 @@ def transfer_money(request):
             from_wallet.withdraw(amount)
             to_wallet.deposit(amount)
 
-        # ✅ Success response WITH balances
+    
         return Response(
             {
                 "message": "Transfer successful",
@@ -287,4 +288,203 @@ def transfer_money(request):
 
     except (InvalidOperation, TypeError):
         return Response({"error": "Invalid amount"}, status=400)
+
+
+@api_view(['GET'])
+@authentication_classes([BasicAuthentication])
+def wallet_transactions(request, wallet_id):
+    """
+    get: Show wallet transaction history and balance derivation
+    """
+    try:
+        wallet = Wallet.objects.get(id=wallet_id)
+
+        transactions = Transaction.objects.filter(wallet=wallet).order_by('created_at')
+
+        deposits = transactions.filter(type='D').aggregate(
+            total=Sum('value')
+        )['total'] or 0
+
+        withdrawals = transactions.filter(type='W').aggregate(
+            total=Sum('value')
+        )['total'] or 0
+
+        derived_balance = deposits - withdrawals
+
+        data = {
+            "wallet_id": wallet_id,
+            "derived_balance": str(derived_balance),
+            "stored_balance": str(wallet.balance),
+            "transactions": [
+                {
+                    "transaction_id": tx.id,
+                    "type": "Deposit" if tx.type == "D" else "Withdraw",
+                    "amount": str(tx.value),
+                    "created_at": tx.created_at
+                }
+                for tx in transactions
+            ]
+        }
+
+        return Response(data, status=200)
+
+    except Wallet.DoesNotExist:
+        return Response({"error": "Wallet not found"}, status=404)
+
+@api_view(['POST'])
+@authentication_classes([BasicAuthentication])
+def add_money(request):
+    """
+    post: Add money to wallet (recorded as immutable transaction)
+    """
+    try:
+        wallet_id = request.data.get('wallet_id')
+        amount = Decimal(request.data.get('amount'))
+
+        if amount <= 0:
+            return Response({"error": "Amount must be greater than zero"}, status=400)
+
+        with transaction.atomic():
+            wallet = Wallet.objects.select_for_update().get(id=wallet_id)
+            wallet.deposit(amount)
+
+        return Response(
+            {
+                "message": "Deposit successful",
+                "wallet_id": wallet_id,
+                "new_balance": str(wallet.balance)
+            },
+            status=200
+        )
+
+    except Wallet.DoesNotExist:
+        return Response({"error": "Wallet not found"}, status=404)
+
+    except (InvalidOperation, TypeError):
+        return Response({"error": "Invalid amount"}, status=400)
+
+@api_view(['POST'])
+@authentication_classes([BasicAuthentication])
+def spend_money(request):
+    """
+    post: Spend money from wallet (recorded as immutable transaction)
+    """
+    try:
+        wallet_id = request.data.get('wallet_id')
+        amount = Decimal(request.data.get('amount'))
+
+        if amount <= 0:
+            return Response({"error": "Amount must be greater than zero"}, status=400)
+
+        with transaction.atomic():
+            wallet = Wallet.objects.select_for_update().get(id=wallet_id)
+
+            if wallet.balance < amount:
+                return Response(
+                    {
+                        "error": "Insufficient balance",
+                        "current_balance": str(wallet.balance)
+                    },
+                    status=400
+                )
+
+            wallet.withdraw(amount)
+
+        return Response(
+            {
+                "message": "Spend successful",
+                "remaining_balance": str(wallet.balance)
+            },
+            status=200
+        )
+
+    except Wallet.DoesNotExist:
+        return Response({"error": "Wallet not found"}, status=404)
+
+    except (InvalidOperation, TypeError):
+        return Response({"error": "Invalid amount"}, status=400)
+
+@api_view(['POST'])
+@authentication_classes([BasicAuthentication])
+def transfer_money(request):
+    """
+    post: Atomic transfer with immutable transaction logs
+    """
+    try:
+        from_wallet_id = request.data.get('from_wallet')
+        to_wallet_id = request.data.get('to_wallet')
+        amount = Decimal(request.data.get('amount'))
+
+        if amount <= 0:
+            return Response({"error": "Invalid amount"}, status=400)
+
+        with transaction.atomic():
+            wallets = (
+                Wallet.objects
+                .select_for_update()
+                .filter(id__in=[from_wallet_id, to_wallet_id])
+            )
+
+            if wallets.count() != 2:
+                return Response({"error": "Wallet not found"}, status=404)
+
+            from_wallet = next(w for w in wallets if w.id == from_wallet_id)
+            to_wallet = next(w for w in wallets if w.id == to_wallet_id)
+
+            if from_wallet.balance < amount:
+                return Response(
+                    {"error": "Insufficient balance"},
+                    status=400
+                )
+
+          
+            from_wallet.withdraw(amount)
+            to_wallet.deposit(amount)
+
+      
+        return Response(
+            {
+                "message": "Transfer successful",
+                "transfer_details": {
+                    "amount_transferred": str(amount),
+                    "from_wallet": {
+                        "id": from_wallet_id,
+                        "remaining_balance": str(from_wallet.balance)
+                    },
+                    "to_wallet": {
+                        "id": to_wallet_id,
+                        "credited_amount": str(amount),
+                        "available_balance": str(to_wallet.balance)
+                    }
+                }
+            },
+            status=200
+        )
+
+    except (InvalidOperation, TypeError):
+        return Response({"error": "Invalid amount"}, status=400)
+
+@api_view(['GET'])
+@authentication_classes([BasicAuthentication])
+def wallet_summary(request, wallet_id):
+    """
+    get: Return current balance, total money added, and total money spent
+    """
+    try:
+        wallet = Wallet.objects.get(id=wallet_id)
+
+        transactions = Transaction.objects.filter(wallet=wallet)
+
+        total_added = transactions.filter(type='D').aggregate(total=Sum('value'))['total'] or Decimal('0.00')
+        total_spent = transactions.filter(type='W').aggregate(total=Sum('value'))['total'] or Decimal('0.00')
+
+        return Response({
+            "wallet_id": wallet_id,
+            "current_balance": str(wallet.balance),
+            "total_added": str(total_added),
+            "total_spent": str(total_spent)
+        }, status=200)
+
+    except Wallet.DoesNotExist:
+        return Response({"error": "Wallet not found"}, status=404)
 
